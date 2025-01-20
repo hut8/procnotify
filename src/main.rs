@@ -1,8 +1,16 @@
 use clap::Parser;
+use errors::ProcNotifyError;
+use lettre::message::Mailbox;
+use lettre::Address;
+use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::Pid;
+use std::path::Path;
+use sysinfo::{ProcessesToUpdate, System};
 
 mod errors;
+
+const FROM_ADDDRESS: &str = "process-notifier@hut8.tools";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -18,6 +26,31 @@ struct Args {
     /// Email address to notify
     #[arg(short, long)]
     email: String,
+
+    /// SMTP Port
+    #[arg(long, default_value = "587", env = "SMTP_PORT")]
+    smtp_port: u16,
+
+    /// SMTP Server
+    #[arg(short, long, env = "SMTP_SERVER")]
+    smtp_server: String,
+
+    /// SMTP Username
+    #[arg(short, long, env = "SMTP_USERNAME")]
+    smtp_username: String,
+
+    /// SMTP Password
+    #[arg(short, long, env = "SMTP_PASSWORD")]
+    smtp_password: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcessData {
+    pid: i32,
+    name: String,
+    status: Option<i32>,
+    signal: Option<Signal>,
+    dump: Option<bool>,
 }
 
 /// Blocks until the process with the specified PID exits.
@@ -28,39 +61,147 @@ struct Args {
 /// # Returns
 /// * `Result<(), String>` - `Ok(())` if the process exits normally,
 ///   or an error message if something goes wrong.
-pub fn wait_for_process_exit(pid: i32) -> Result<(), String> {
+pub fn wait_for_process_exit(
+    mut process_data: ProcessData,
+) -> Result<ProcessData, ProcNotifyError> {
+    let pid = process_data.pid;
     let process_pid = Pid::from_raw(pid);
 
     match waitpid(process_pid, None) {
-        Ok(WaitStatus::Exited(_, _)) => Ok(()), // Process exited normally
-        Ok(WaitStatus::Signaled(_, sig, _)) => Err(format!("Process was killed by signal: {:?}", sig)),
-        Ok(status) => Err(format!("Unexpected wait status: {:?}", status)),
-        Err(err) => Err(format!("Error while waiting for process: {}", err)),
+        Ok(WaitStatus::Exited(_, status)) => {
+            process_data.status = Some(status);
+            process_data.signal = None;
+            Ok(process_data)
+        }
+        Ok(WaitStatus::Signaled(_, sig, dump)) => {
+            process_data.status = None;
+            process_data.signal = Some(sig);
+            process_data.dump = Some(dump);
+            Ok(process_data)
+        }
+        Ok(status) => Err(ProcNotifyError::RuntimeError(format!(
+            "Unexpected wait status: {:?}",
+            status
+        ))),
+        Err(err) => Err(ProcNotifyError::RuntimeError(format!(
+            "Error while waiting for process: {}",
+            err
+        ))),
     }
 }
 
-fn find_processes(name: Option<String>, pid: Option<i32>) -> Result<i32, errors::ProcNotifyError> {
+fn find_processes(
+    name: Option<String>,
+    pid: Option<i32>,
+) -> Result<ProcessData, errors::ProcNotifyError> {
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+
     if let Some(pid) = pid {
-        return Ok(pid);
+        let proc = sys
+            .process(sysinfo::Pid::from(pid as usize))
+            .ok_or(errors::ProcNotifyError::NoSuchProcess(pid.to_string()))?;
+        let process_data = ProcessData {
+            pid: pid,
+            name: proc.name().to_string_lossy().to_string(),
+            status: None,
+            dump: None,
+            signal: None,
+        };
+        return Ok(process_data);
     }
 
     if let Some(name) = name {
-        // Find the PID of the process with the specified name
-        // (this is just a placeholder implementation)
-        Ok(12345)
-    } else {
-        Err(errors::ProcNotifyError::NullSelection)
+        for (pid, process) in sys.processes() {
+            if let Some(exe_path) = process.exe() {
+                if let Some(exe_name) = exe_path.file_name() {
+                    if exe_name == Path::new(&name).as_os_str() {
+                        let process_data = ProcessData {
+                            pid: pid.as_u32() as i32,
+                            name: exe_name.to_string_lossy().to_string(),
+                            status: None,
+                            dump: None,
+                            signal: None,
+                        };
+                        return Ok(process_data);
+                    }
+                }
+            }
+        }
+        return Err(errors::ProcNotifyError::NoSuchProcess(name.to_string()));
     }
+    Err(errors::ProcNotifyError::NullSelection)
+}
+
+fn notify_user(email: &str, text: &str) -> Result<(), ProcNotifyError> {
+    // Send an email to the specified address
+    println!("Sending email to {}: {}", email, text);
+    let to_address = email.parse::<Address>().map_err(|_| {
+        ProcNotifyError::InvalidConfiguration(format!("invalid to address: {}", email))
+    })?;
+
+    let from = Mailbox {
+        name: Some("Process Notifier".to_string()),
+        email: FROM_ADDDRESS.parse().unwrap(),
+    };
+    let to = Mailbox {
+        name: None,
+        email: to_address,
+    };
+    let message = lettre::Message::builder()
+        .from(from)
+        .to(to)
+        .subject("Process exited")
+        .body(text.to_string())
+        .unwrap();
+
+    Ok(())
+}
+
+fn make_error_message(process_data: ProcessData, err: ProcNotifyError) -> String {
+    let process_str = format!("Process {} ({})", process_data.name, process_data.pid);
+    let error_str = match err {
+        ProcNotifyError::NullSelection => "No process selection criteria provided".to_string(),
+        ProcNotifyError::NoSuchProcess(name) => format!("No such process: {}", name),
+        ProcNotifyError::InvalidConfiguration(msg) => format!("Invalid configuration: {}", msg),
+        ProcNotifyError::RuntimeError(msg) => format!("Runtime error: {}", msg),
+    };
+    format!("{}\n{}", process_str, error_str)
+}
+
+fn make_success_message(process_data: ProcessData) -> String {
+    let process_str = format!("Process {} ({})", process_data.name, process_data.pid);
+    let message = if let Some(status) = process_data.status {
+        format!("{} exited with status {}", process_str, status)
+    } else if let Some(signal) = process_data.signal {
+        format!("{} exited with signal {:?}", process_str, signal)
+    } else {
+        format!("{} exited", process_str)
+    };
+    let message = if let Some(dump) = process_data.dump {
+        if dump {
+            format!("{} and dumped core", message)
+        } else {
+            message
+        }
+    } else {
+        message
+    };
+    message
 }
 
 fn main() {
     let args = Args::parse();
-    let pid = find_processes(args.name, args.pid).unwrap_or_else(|_| {
+    let process_data = find_processes(args.name, args.pid).unwrap_or_else(|_| {
         eprintln!("Error: Process not found");
         std::process::exit(1);
     });
-    match wait_for_process_exit(pid) {
-        Ok(()) => println!("Process exited normally"),
-        Err(err) => eprintln!("Error: {}", err),
-    }
+    let message = match wait_for_process_exit(process_data.clone()) {
+        Ok(process_data) => make_success_message(process_data),
+        Err(err) => make_error_message(process_data, err),
+    };
+    notify_user(&args.email, &message).unwrap_or_else(|err| {
+        eprintln!("Error: {}", err);
+        std::process::exit(1);
+    });
 }
