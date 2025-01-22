@@ -1,7 +1,8 @@
 use clap::Parser;
 use errors::ProcNotifyError;
 use lettre::message::Mailbox;
-use lettre::Address;
+use lettre::transport::smtp::authentication::{Credentials, Mechanism};
+use lettre::{Address, SmtpTransport};
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::Pid;
@@ -148,12 +149,25 @@ fn notify_user(email: &str, text: &str) -> Result<(), ProcNotifyError> {
         name: None,
         email: to_address,
     };
+    // Create TLS transport on port 587 with STARTTLS
+    let sender = SmtpTransport::starttls_relay("smtp.example.com")
+        .map_err(|err| ProcNotifyError::RuntimeError(err.to_string()))?
+        // Add credentials for authentication
+        .credentials(Credentials::new(
+            "username".to_owned(),
+            "password".to_owned(),
+        ))
+        // Configure expected authentication mechanism
+        .authentication(vec![Mechanism::Plain])
+        .build();
     let message = lettre::Message::builder()
         .from(from)
         .to(to)
         .subject("Process exited")
         .body(text.to_string())
         .unwrap();
+
+    sender.send(&message).map_err(|err| ProcNotifyError::RuntimeError(err.to_string()))?;
 
     Ok(())
 }
@@ -171,23 +185,21 @@ fn make_error_message(process_data: ProcessData, err: ProcNotifyError) -> String
 
 fn make_success_message(process_data: ProcessData) -> String {
     let process_str = format!("Process {} ({})", process_data.name, process_data.pid);
-    let message = if let Some(status) = process_data.status {
-        format!("{} exited with status {}", process_str, status)
-    } else if let Some(signal) = process_data.signal {
-        format!("{} exited with signal {:?}", process_str, signal)
-    } else {
-        format!("{} exited", process_str)
-    };
-    let message = if let Some(dump) = process_data.dump {
-        if dump {
-            format!("{} and dumped core", message)
-        } else {
-            message
-        }
-    } else {
-        message
-    };
-    message
+    match (
+        process_data.status,
+        process_data.signal,
+        process_data.dump.unwrap_or(false),
+    ) {
+        (Some(status), _, _) => format!("{} exited with status {}", process_str, status),
+        (_, Some(signal), dumped) => format!(
+            "{} exited with signal {:?} {}",
+            process_str,
+            signal,
+            if dumped { " and dumped core" } else { "" }
+        ),
+        (None, None, true) => format!("{} exited and dumped core", process_str),
+        (None, None, false) => format!("{} exited", process_str),
+    }
 }
 
 fn main() {
