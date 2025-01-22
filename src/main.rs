@@ -2,7 +2,7 @@ use clap::Parser;
 use errors::ProcNotifyError;
 use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
-use lettre::{Address, SmtpTransport};
+use lettre::{Address, SmtpTransport, Transport};
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::Pid;
@@ -25,23 +25,23 @@ struct Args {
     pid: Option<i32>,
 
     /// Email address to notify
-    #[arg(short, long)]
+    #[arg(short, long, env = "PROCNOTIFY_EMAIL")]
     email: String,
 
     /// SMTP Port
-    #[arg(long, default_value = "587", env = "SMTP_PORT")]
+    #[arg(long, default_value = "587", env = "PROCNOTIFY_SMTP_PORT")]
     smtp_port: u16,
 
     /// SMTP Server
-    #[arg(short, long, env = "SMTP_SERVER")]
+    #[arg(short, long, env = "PROCNOTIFY_SMTP_SERVER")]
     smtp_server: String,
 
     /// SMTP Username
-    #[arg(short, long, env = "SMTP_USERNAME")]
+    #[arg(short, long, env = "PROCNOTIFY_SMTP_USERNAME")]
     smtp_username: String,
 
     /// SMTP Password
-    #[arg(short, long, env = "SMTP_PASSWORD")]
+    #[arg(short, long, env = "PROCNOTIFY_SMTP_PASSWORD")]
     smtp_password: String,
 }
 
