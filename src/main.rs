@@ -33,15 +33,15 @@ struct Args {
     smtp_port: u16,
 
     /// SMTP Server
-    #[arg(short, long, env = "PROCNOTIFY_SMTP_SERVER")]
+    #[arg(long, env = "PROCNOTIFY_SMTP_SERVER")]
     smtp_server: String,
 
     /// SMTP Username
-    #[arg(short, long, env = "PROCNOTIFY_SMTP_USERNAME")]
+    #[arg(long, env = "PROCNOTIFY_SMTP_USERNAME")]
     smtp_username: String,
 
     /// SMTP Password
-    #[arg(short, long, env = "PROCNOTIFY_SMTP_PASSWORD")]
+    #[arg(long, env = "PROCNOTIFY_SMTP_PASSWORD")]
     smtp_password: String,
 }
 
