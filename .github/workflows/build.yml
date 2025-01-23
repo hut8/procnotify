@@ -51,7 +51,7 @@ jobs:
           ${{ runner.os }}-cargo-
     # Install musl if necessary
     - name: Install musl
-      run: apt update && apt install musl-tools
+      run: sudo apt update && sudo apt install -y musl-tools
       if: ${{ matrix.target.name == 'linux' }}
 
     # Build the project in release mode
