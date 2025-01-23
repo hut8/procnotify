@@ -1,0 +1,46 @@
+name: Build and Package Rust Program
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Checkout the code
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    # Install Rust
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    # Cache Cargo dependencies
+    - name: Cache Cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/bin
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    # Build the project in release mode
+    - name: Build project
+      run: cargo build --release
+
+    # Package the binary as an artifact
+    - name: Upload binary as artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: procnotify
+        path: target/release/procnotify
