@@ -52,12 +52,11 @@ jobs:
     # Install musl if necessary
     - name: Install musl
       run: apt update && apt install musl-tools
-      if: runner.os == 'ubuntu-latest'      
+      if: ${{ matrix.target.name == 'linux' }}
 
     # Build the project in release mode
     - name: Build project
       run: cargo build --release --target=${{ matrix.target.triple }}
-
 
     # Package the binary as an artifact
     - name: Upload binary as artifact
