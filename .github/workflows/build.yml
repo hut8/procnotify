@@ -13,7 +13,7 @@ jobs:
       matrix:
         target:
             - os: ubuntu-latest
-              triple: x86_64-unknown-linux-gnu
+              triple: x86_64-unknown-linux-musl
               name: linux
             - os: macos-latest
               triple: x86_64-apple-darwin
