@@ -1,18 +1,16 @@
 use clap::Parser;
 use errors::ProcNotifyError;
-use kqueue::FilterFlag;
 use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::{Address, SmtpTransport, Transport};
 use nix::sys::signal::Signal;
-use nix::sys::wait::{waitpid, WaitStatus};
-use nix::unistd::Pid;
+use process::wait_for_process_exit;
 use std::path::Path;
-use std::{thread, time};
 use sysinfo::{ProcessesToUpdate, System};
-use tracing::{debug, error, info, warn, Level};
+use tracing::{error, info, warn, Level};
 
 mod errors;
+mod process;
 
 const FROM_ADDDRESS: &str = "process-notifier@hut8.tools";
 
@@ -76,145 +74,6 @@ impl ProcessData {
             status: None,
             signal: None,
             dump: None,
-        }
-    }
-}
-
-/// Blocks until the process with the specified PID exits.
-///
-/// # Arguments
-/// * `pid` - The process ID of the process to wait for.
-///
-/// # Returns
-/// * `Result<(), String>` - `Ok(())` if the process exits normally,
-///   or an error message if something goes wrong.
-pub fn wait_for_child_process_exit(
-    mut process_data: ProcessData,
-) -> Result<ProcessData, ProcNotifyError> {
-    let pid = process_data.pid;
-    let process_pid = Pid::from_raw(pid);
-
-    match waitpid(process_pid, None) {
-        Ok(WaitStatus::Exited(_, status)) => {
-            process_data.status = Some(status);
-            process_data.signal = None;
-            Ok(process_data)
-        }
-        Ok(WaitStatus::Signaled(_, sig, dump)) => {
-            process_data.status = None;
-            process_data.signal = Some(sig);
-            process_data.dump = Some(dump);
-            Ok(process_data)
-        }
-        Ok(status) => Err(ProcNotifyError::RuntimeError(format!(
-            "Unexpected wait status: {:?}",
-            status
-        ))),
-        Err(err) => Err(ProcNotifyError::RuntimeError(format!(
-            "Error while waiting for process: {}",
-            err
-        ))),
-    }
-}
-
-pub fn wait_for_process_exit_poll(
-    process_data: ProcessData,
-) -> Result<ProcessData, ProcNotifyError> {
-    let sys = System::new();
-    let pid = sysinfo::Pid::from_u32(process_data.pid as u32);
-    loop {
-        let proc = sys.process(pid);
-        if proc.is_none() {
-            break;
-        }
-        thread::sleep(time::Duration::from_secs(1));
-    }
-    Ok(process_data)
-}
-
-fn wait_for_process_exit_kqueue(process_data: ProcessData) -> Result<ProcessData, ProcNotifyError> {
-    let mut watcher = kqueue::Watcher::new().map_err(|err| {
-        ProcNotifyError::RuntimeError(format!("Failed to create kqueue: {}", err))
-    })?;
-    watcher
-        .add_pid(
-            process_data.pid,
-            kqueue::EventFilter::EVFILT_PROC,
-            FilterFlag::NOTE_EXIT,
-        )
-        .map_err(|err| {
-            ProcNotifyError::RuntimeError(format!("Failed to add pid to kqueue: {}", err))
-        })?;
-    watcher.watch().map_err(|err| {
-        ProcNotifyError::RuntimeError(format!("Failed to watch kqueue events: {}", err))
-    })?;
-    loop {
-        let event = watcher.poll_forever(None);
-        match event {
-            Some(event) => match event.data {
-                kqueue::EventData::Proc(e) => match e {
-                    kqueue::Proc::Exit(status) => {
-                        let process_data = ProcessData {
-                            status: Some(status as i32),
-                            ..process_data
-                        };
-                        return Ok(process_data);
-                    }
-                    _ => {
-                        return Err(ProcNotifyError::RuntimeError(format!(
-                            "Unexpected event data: {:?}",
-                            e
-                        )));
-                    }
-                },
-                _ => {
-                    return Err(ProcNotifyError::RuntimeError(format!(
-                        "Unexpected event data: {:?}",
-                        event.data
-                    )));
-                }
-            },
-            None => {
-                return Err(ProcNotifyError::RuntimeError("No event data".to_string()));
-            }
-        }
-    }
-}
-
-pub fn wait_for_process_exit_ptrace(
-    process_data: ProcessData,
-) -> Result<ProcessData, ProcNotifyError> {
-    let pid = nix::unistd::Pid::from_raw(process_data.pid);
-    nix::sys::ptrace::attach(pid).map_err(|err| {
-        ProcNotifyError::RuntimeError(format!("Error attaching to process: {}", err))
-    })?;
-    nix::sys::wait::waitpid(pid, None).map_err(|err| {
-        ProcNotifyError::RuntimeError(format!("Error waiting for process: {}", err))
-    })?;
-    nix::sys::ptrace::cont(pid, None).map_err(|err| {
-        ProcNotifyError::RuntimeError(format!("Error continuing process: {}", err))
-    })?;
-    loop {
-        let status = nix::sys::wait::waitpid(pid, None).map_err(|err| {
-            ProcNotifyError::RuntimeError(format!("Error in waitpid loop: {}", err))
-        })?;
-        match status {
-            WaitStatus::Exited(_, status) => {
-                return Ok(ProcessData {
-                    status: Some(status),
-                    ..process_data
-                });
-            }
-            WaitStatus::Signaled(_, signal, dumped) => {
-                return Ok(ProcessData {
-                    signal: Some(signal),
-                    dump: Some(dumped),
-                    ..process_data
-                });
-            }
-            x => {
-                debug!("wait loop: wait status: {:?}", x);
-            }
         }
     }
 }
@@ -316,11 +175,17 @@ fn make_success_message(process_data: ProcessData) -> String {
             let hours = total_seconds / 3600;
             let minutes = (total_seconds % 3600) / 60;
             let seconds = total_seconds % 60;
-            format!("started at {} and ran for {:02}h {:02}m {:02}s", start_time, hours, minutes, seconds)
+            format!(
+                "started at {} and ran for {:02}h {:02}m {:02}s",
+                start_time, hours, minutes, seconds
+            )
         }
         None => "".to_string(),
     };
-    let process_str = format!("Process {} ({}) {}", process_data.name, process_data.pid, time_str);
+    let process_str = format!(
+        "Process {} ({}) {}",
+        process_data.name, process_data.pid, time_str
+    );
     match (
         process_data.status,
         process_data.signal,
@@ -347,7 +212,7 @@ fn main() {
         error!("error: process not found");
         std::process::exit(1);
     });
-    let message = match wait_for_process_exit_kqueue(process_data.clone()) {
+    let message = match wait_for_process_exit(process_data.clone()) {
         Ok(process_data) => make_success_message(process_data),
         Err(err) => {
             error!("error: {}", err);
