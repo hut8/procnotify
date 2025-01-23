@@ -10,7 +10,7 @@ use nix::unistd::Pid;
 use std::path::Path;
 use std::{thread, time};
 use sysinfo::{ProcessesToUpdate, System};
-use tracing::{debug, error, warn, Level};
+use tracing::{debug, error, info, warn, Level};
 
 mod errors;
 
@@ -60,7 +60,8 @@ pub struct ProcessData {
 
 impl ProcessData {
     pub fn new(pid: i32, name: String) -> ProcessData {
-        let system = System::new();
+        let mut system = System::new();
+        system.refresh_all();
         let proc = system.process(sysinfo::Pid::from(pid as usize));
         let start_time = proc.map(|p| {
             chrono::DateTime::from_timestamp(p.start_time() as i64, 0).expect("invalid timestamp")
@@ -261,7 +262,7 @@ fn notify_user(
     text: &str,
 ) -> Result<(), ProcNotifyError> {
     // Send an email to the specified address
-    println!("Sending email to {}: {}", email, text);
+    info!("sending email to {}: {}", email, text);
     let to_address = email.parse::<Address>().map_err(|_| {
         ProcNotifyError::InvalidConfiguration(format!("invalid to address: {}", email))
     })?;
