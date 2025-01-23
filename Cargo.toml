@@ -14,6 +14,5 @@ nix = { version = "0.29.0", features = ["process", "ptrace"] }
 thiserror = "2.0.11"
 dotenvy = "0.15.7"
 hostname = "0.4.0"
-embed_plist = "1.2.2"
 kqueue = "1.0.8"
 chrono = "0.4.39"
