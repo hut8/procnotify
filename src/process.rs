@@ -148,6 +148,8 @@ pub fn wait_for_process_exit_ptrace(
 
 #[cfg(target_os = "linux")]
 pub fn wait_for_process_exit(process_data: ProcessData) -> Result<ProcessData, ProcNotifyError> {
+    use nix::sys::signal::Signal;
+
     let mut monitor = cnproc::PidMonitor::new().map_err(|err| {
         ProcNotifyError::RuntimeError(format!("Error creating PidMonitor: {}", err))
     })?;
@@ -156,6 +158,16 @@ pub fn wait_for_process_exit(process_data: ProcessData) -> Result<ProcessData, P
             cnproc::PidEvent::Exit(status) => {
                 return Ok(ProcessData {
                     status: Some(status),
+                    ..process_data
+                });
+            }
+            cnproc::PidEvent::Coredump(signal) => {
+                let signal = Signal::try_from(signal).map_err(|err| {
+                    ProcNotifyError::RuntimeError(format!("Error converting signal {}: {}", signal, err))
+                })?;
+                return Ok(ProcessData {
+                    signal: Some(signal),
+                    dump: Some(true),
                     ..process_data
                 });
             }
