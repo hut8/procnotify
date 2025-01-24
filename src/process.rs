@@ -1,11 +1,12 @@
 use std::thread;
 
-use nix::{sys::wait::{waitpid, WaitStatus}, unistd::Pid};
+use nix::{
+    sys::wait::{waitpid, WaitStatus},
+    unistd::Pid,
+};
 use sysinfo::System;
 
-
 use crate::{errors::ProcNotifyError, ProcessData};
-
 
 /// Blocks until the process with the specified PID exits.
 ///
@@ -46,7 +47,12 @@ pub fn wait_for_child_process_exit(
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
 pub fn wait_for_process_exit(process_data: ProcessData) -> Result<ProcessData, ProcNotifyError> {
     use kqueue::FilterFlag;
 
@@ -100,7 +106,8 @@ pub fn wait_for_process_exit(process_data: ProcessData) -> Result<ProcessData, P
 
 /// Blocks until the process with the specified PID exits. Uses ptrace which is very invasive; not yet necessary.
 #[cfg(target_os = "linux")]
-pub fn wait_for_process_exit(
+#[allow(dead_code)]
+pub fn wait_for_process_exit_ptrace(
     process_data: ProcessData,
 ) -> Result<ProcessData, ProcNotifyError> {
     use tracing::debug;
@@ -137,6 +144,29 @@ pub fn wait_for_process_exit(
             }
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+pub fn wait_for_process_exit(process_data: ProcessData) -> Result<ProcessData, ProcNotifyError> {
+    let mut monitor = cnproc::PidMonitor::new().map_err(|err| {
+        ProcNotifyError::RuntimeError(format!("Error creating PidMonitor: {}", err))
+    })?;
+    while let Some(evt) = monitor.recv() {
+        match evt {
+            cnproc::PidEvent::Exit(status) => {
+                return Ok(ProcessData {
+                    status: Some(status),
+                    ..process_data
+                });
+            }
+            _ => {
+                return Err(ProcNotifyError::RuntimeError(
+                    "Unexpected event".to_string(),
+                ));
+            }
+        }
+    }
+    Err(ProcNotifyError::RuntimeError("No event".to_string()))
 }
 
 /// Polls the system every second until the process with the specified PID exits.
