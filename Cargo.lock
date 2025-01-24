@@ -240,6 +240,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f46ad14479a25103f283c0f10005961cf086d8dc42205bb44c46ac563475dca6"
 
 [[package]]
+name = "cnproc"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e80ed54e25ca8ae7bda301eee4b44a62ad079082e6b8bc96d3a33ae4e1e7ed5c"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -831,6 +840,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "clap",
+ "cnproc",
  "dotenvy",
  "hostname",
  "kqueue",
