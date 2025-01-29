@@ -149,36 +149,55 @@ pub fn wait_for_process_exit_ptrace(
 #[cfg(target_os = "linux")]
 pub fn wait_for_process_exit(process_data: ProcessData) -> Result<ProcessData, ProcNotifyError> {
     use nix::sys::signal::Signal;
+    use tracing::{debug, warn};
 
     let mut monitor = cnproc::PidMonitor::new().map_err(|err| {
         ProcNotifyError::RuntimeError(format!("Error creating PidMonitor: {}", err))
     })?;
-    while let Some(evt) = monitor.recv() {
-        match evt {
-            cnproc::PidEvent::Exit(status) => {
-                return Ok(ProcessData {
-                    status: Some(status),
-                    ..process_data
-                });
-            }
-            cnproc::PidEvent::Coredump(signal) => {
-                let signal = Signal::try_from(signal).map_err(|err| {
-                    ProcNotifyError::RuntimeError(format!("Error converting signal {}: {}", signal, err))
-                })?;
-                return Ok(ProcessData {
-                    signal: Some(signal),
-                    dump: Some(true),
-                    ..process_data
-                });
-            }
-            _ => {
-                return Err(ProcNotifyError::RuntimeError(
-                    "Unexpected event".to_string(),
-                ));
+    loop {
+        match monitor.recv() {
+            Some(evt) => match evt {
+                cnproc::PidEvent::Exit(pid, status, signal) => {
+                    if pid != process_data.pid {
+                        debug!("received event for irrelevant PID: {}", pid);
+                        continue;
+                    }
+                    let signal = if signal == 0 {
+                        None
+                    } else {
+                        Some(
+                            Signal::try_from(signal as i32)
+                                .map_err(|x| ProcNotifyError::RuntimeError(x.to_string()))?,
+                        )
+                    };
+                    return Ok(ProcessData {
+                        status: Some(status as i32),
+                        signal: signal,
+                        ..process_data
+                    });
+                }
+                cnproc::PidEvent::Coredump(signal) => {
+                    let signal = Signal::try_from(signal).map_err(|err| {
+                        ProcNotifyError::RuntimeError(format!(
+                            "Error converting signal {}: {}",
+                            signal, err
+                        ))
+                    })?;
+                    return Ok(ProcessData {
+                        signal: Some(signal),
+                        dump: Some(true),
+                        ..process_data
+                    });
+                }
+                _ => {
+                    warn!("Unexpected event: {:?}", evt);
+                }
+            },
+            None => {
+                warn!("No event");
             }
         }
     }
-    Err(ProcNotifyError::RuntimeError("No event".to_string()))
 }
 
 /// Polls the system every second until the process with the specified PID exits.

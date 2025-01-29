@@ -19,3 +19,6 @@ cnproc = "0.2.1"
 
 [target.'cfg(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
 kqueue = "1.0.8"
+
+[patch.crates-io]
+cnproc = { path = "/home/liam/cnproc" }
