@@ -242,6 +242,7 @@ checksum = "f46ad14479a25103f283c0f10005961cf086d8dc42205bb44c46ac563475dca6"
 [[package]]
 name = "cnproc"
 version = "0.2.1"
+source = "git+https://github.com/hut8/cnproc-rs.git?branch=main#19bd3deb022e9c2de17473ef2b46122318f55b75"
 dependencies = [
  "libc",
 ]
