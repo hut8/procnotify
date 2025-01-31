@@ -157,34 +157,40 @@ pub fn wait_for_process_exit(process_data: ProcessData) -> Result<ProcessData, P
     loop {
         match monitor.recv() {
             Some(evt) => match evt {
-                cnproc::PidEvent::Exit(pid, status, signal) => {
-                    if pid != process_data.pid {
-                        debug!("received event for irrelevant PID: {}", pid);
+                cnproc::PidEvent::Exit {
+                    process_pid,
+                    exit_code,
+                    exit_signal,
+                    ..
+                } => {
+                    if process_pid != process_data.pid {
+                        debug!("received event for irrelevant PID: {}", process_pid);
                         continue;
                     }
-                    let signal = if signal == 0 {
+                    let signal = if exit_signal == 0 {
                         None
                     } else {
                         Some(
-                            Signal::try_from(signal as i32)
+                            Signal::try_from(exit_signal as i32)
                                 .map_err(|x| ProcNotifyError::RuntimeError(x.to_string()))?,
                         )
                     };
                     return Ok(ProcessData {
-                        status: Some(status as i32),
-                        signal: signal,
+                        status: Some(exit_code as i32),
+                        signal,
                         ..process_data
                     });
                 }
-                cnproc::PidEvent::Coredump(signal) => {
-                    let signal = Signal::try_from(signal).map_err(|err| {
-                        ProcNotifyError::RuntimeError(format!(
-                            "Error converting signal {}: {}",
-                            signal, err
-                        ))
-                    })?;
+                // TODO: Determine if both exit and coredump events can be received for the same process
+                cnproc::PidEvent::Coredump {
+                    process_pid,
+                    ..
+                } => {
+                    if process_pid != process_data.pid {
+                        debug!("received event for irrelevant PID: {}", process_pid);
+                        continue;
+                    }
                     return Ok(ProcessData {
-                        signal: Some(signal),
                         dump: Some(true),
                         ..process_data
                     });
