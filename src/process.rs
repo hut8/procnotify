@@ -149,7 +149,7 @@ pub fn wait_for_process_exit_ptrace(
 #[cfg(target_os = "linux")]
 pub fn wait_for_process_exit(process_data: ProcessData) -> Result<ProcessData, ProcNotifyError> {
     use nix::sys::signal::Signal;
-    use tracing::{debug, warn};
+    use tracing::warn;
 
     let mut monitor = cnproc::PidMonitor::new().map_err(|err| {
         ProcNotifyError::RuntimeError(format!("Error creating PidMonitor: {}", err))
@@ -164,7 +164,6 @@ pub fn wait_for_process_exit(process_data: ProcessData) -> Result<ProcessData, P
                     ..
                 } => {
                     if process_pid != process_data.pid {
-                        debug!("received event for irrelevant PID: {}", process_pid);
                         continue;
                     }
                     let signal = if exit_signal == 0 {
@@ -187,7 +186,6 @@ pub fn wait_for_process_exit(process_data: ProcessData) -> Result<ProcessData, P
                     ..
                 } => {
                     if process_pid != process_data.pid {
-                        debug!("received event for irrelevant PID: {}", process_pid);
                         continue;
                     }
                     return Ok(ProcessData {
@@ -196,7 +194,7 @@ pub fn wait_for_process_exit(process_data: ProcessData) -> Result<ProcessData, P
                     });
                 }
                 _ => {
-                    warn!("Unexpected event: {:?}", evt);
+                    continue;
                 }
             },
             None => {
