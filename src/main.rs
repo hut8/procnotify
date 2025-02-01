@@ -15,14 +15,16 @@ mod process;
 const FROM_ADDDRESS: &str = "process-notifier@hut8.tools";
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about = "Monitor a process and send an email notification when it exits")]
+#[command(long_about = "Monitor a process (specified by either name or PID) and send an email notification when it exits. \
+You must specify exactly one of --name or --pid to identify the process to monitor.")]
 struct Args {
-    /// Name of the process to monitor
-    #[arg(short, long)]
+    /// Name of the process to monitor (cannot be used with --pid)
+    #[arg(short, long, conflicts_with = "pid")]
     name: Option<String>,
 
-    /// Process ID to monitor
-    #[arg(short, long)]
+    /// Process ID to monitor (cannot be used with --name)
+    #[arg(short, long, conflicts_with = "name")]
     pid: Option<i32>,
 
     /// Email address to notify
@@ -163,7 +165,8 @@ fn notify_user(
 fn make_error_message(process_data: ProcessData, err: ProcNotifyError) -> String {
     let process_str = format!("Process {} ({})", process_data.name, process_data.pid);
     let error_str = match err {
-        ProcNotifyError::NullSelection => "No process selection criteria provided".to_string(),
+        ProcNotifyError::NullSelection => "No process selection criteria provided. Use either --name or --pid to specify a process to monitor.".to_string(),
+        ProcNotifyError::BothNameAndPid => "Cannot specify both --name and --pid. Use only one to identify the process to monitor.".to_string(),
         ProcNotifyError::NoSuchProcess(name) => format!("No such process: {}", name),
         ProcNotifyError::InvalidConfiguration(msg) => format!("Invalid configuration: {}", msg),
         ProcNotifyError::RuntimeError(msg) => format!("Runtime error: {}", msg),
@@ -207,13 +210,28 @@ fn make_success_message(process_data: ProcessData) -> String {
     }
 }
 
+fn validate_process_args(name: Option<String>, pid: Option<i32>) -> Result<(), ProcNotifyError> {
+    match (name, pid) {
+        (None, None) => Err(ProcNotifyError::NullSelection),
+        (Some(_), Some(_)) => Err(ProcNotifyError::BothNameAndPid),
+        _ => Ok(()),
+    }
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_max_level(Level::DEBUG)
         .init();
     let args = Args::parse();
-    let process_data = find_processes(args.name, args.pid).unwrap_or_else(|_| {
-        error!("error: process not found");
+
+    // Validate process selection arguments
+    if let Err(err) = validate_process_args(args.name.clone(), args.pid) {
+        error!("Error: {}", err);
+        std::process::exit(1);
+    }
+
+    let process_data = find_processes(args.name, args.pid).unwrap_or_else(|err| {
+        error!("Error: {}", err);
         std::process::exit(1);
     });
     let message = match wait_for_process_exit(process_data.clone()) {
@@ -226,6 +244,7 @@ fn main() {
                     error!("runtime error: {}", e);
                     std::process::exit(1);
                 }
+                ProcNotifyError::BothNameAndPid => std::process::exit(1),
                 _ => {}
             }
             make_error_message(process_data, err)
