@@ -54,6 +54,8 @@ pub struct ProcessData {
     signal: Option<Signal>,
     dump: Option<bool>,
     start_time: Option<chrono::DateTime<chrono::Utc>>,
+    stdout: Option<String>,
+    stderr: Option<String>,
 }
 
 impl ProcessData {
@@ -74,6 +76,8 @@ impl ProcessData {
             status: None,
             signal: None,
             dump: None,
+            stdout: None,
+            stderr: None,
         }
     }
 }

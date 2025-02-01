@@ -1,4 +1,8 @@
-use std::thread;
+use std::{
+    io::Read,
+    process::{Command, Stdio},
+    thread,
+};
 
 use nix::{
     sys::wait::{waitpid, WaitStatus},
@@ -7,6 +11,54 @@ use nix::{
 use sysinfo::System;
 
 use crate::{errors::ProcNotifyError, ProcessData};
+
+/// Spawns a new process with the given command and arguments.
+/// Captures stdout and stderr streams from the process.
+///
+/// # Arguments
+/// * `command` - The command to execute
+/// * `args` - Vector of arguments to pass to the command
+///
+/// # Returns
+/// * `Result<ProcessData, ProcNotifyError>` - Process information including PID and output streams
+pub fn spawn(command: &str, args: Vec<&str>) -> Result<ProcessData, ProcNotifyError> {
+    let mut child = Command::new(command)
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| ProcNotifyError::RuntimeError(format!("Failed to spawn process: {}", e)))?;
+
+    let pid = child.id() as i32;
+    let name = command.to_string();
+
+    // Get the stdout handle and spawn a thread to read it
+    let mut stdout_handle = child.stdout.take().unwrap();
+    let stdout_thread = thread::spawn(move || {
+        let mut output = String::new();
+        stdout_handle
+            .read_to_string(&mut output)
+            .expect("Failed to read stdout");
+        output
+    });
+
+    // Get the stderr handle and spawn a thread to read it
+    let mut stderr_handle = child.stderr.take().unwrap();
+    let stderr_thread = thread::spawn(move || {
+        let mut output = String::new();
+        stderr_handle
+            .read_to_string(&mut output)
+            .expect("Failed to read stderr");
+        output
+    });
+
+    // Create ProcessData with captured output
+    let mut process_data = ProcessData::new(pid, name);
+    process_data.stdout = Some(stdout_thread.join().unwrap());
+    process_data.stderr = Some(stderr_thread.join().unwrap());
+
+    Ok(process_data)
+}
 
 /// Blocks until the process with the specified PID exits.
 ///
