@@ -16,16 +16,20 @@ const FROM_ADDDRESS: &str = "process-notifier@hut8.tools";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Monitor a process and send an email notification when it exits")]
-#[command(long_about = "Monitor a process (specified by either name or PID) and send an email notification when it exits. \
-You must specify exactly one of --name or --pid to identify the process to monitor.")]
+#[command(long_about = "Monitor a process and send an email notification when it exits. \
+Either monitor an existing process using --name or --pid, or provide a command to execute.")]
 struct Args {
-    /// Name of the process to monitor (cannot be used with --pid)
-    #[arg(short, long, conflicts_with = "pid")]
+    /// Name of the process to monitor (cannot be used with --pid or command)
+    #[arg(short, long, conflicts_with_all = ["pid", "command"])]
     name: Option<String>,
 
-    /// Process ID to monitor (cannot be used with --name)
-    #[arg(short, long, conflicts_with = "name")]
+    /// Process ID to monitor (cannot be used with --name or command)
+    #[arg(short, long, conflicts_with_all = ["name", "command"])]
     pid: Option<i32>,
+
+    /// Command and arguments to execute and monitor
+    #[arg(trailing_var_arg = true, conflicts_with_all = ["name", "pid"])]
+    command: Vec<String>,
 
     /// Email address to notify
     #[arg(short, long, env = "PROCNOTIFY_EMAIL")]
@@ -167,6 +171,7 @@ fn make_error_message(process_data: ProcessData, err: ProcNotifyError) -> String
     let error_str = match err {
         ProcNotifyError::NullSelection => "No process selection criteria provided. Use either --name or --pid to specify a process to monitor.".to_string(),
         ProcNotifyError::BothNameAndPid => "Cannot specify both --name and --pid. Use only one to identify the process to monitor.".to_string(),
+        ProcNotifyError::InvalidCombination => "Cannot combine command execution with --name or --pid options".to_string(),
         ProcNotifyError::NoSuchProcess(name) => format!("No such process: {}", name),
         ProcNotifyError::InvalidConfiguration(msg) => format!("Invalid configuration: {}", msg),
         ProcNotifyError::RuntimeError(msg) => format!("Runtime error: {}", msg),
@@ -210,10 +215,11 @@ fn make_success_message(process_data: ProcessData) -> String {
     }
 }
 
-fn validate_process_args(name: Option<String>, pid: Option<i32>) -> Result<(), ProcNotifyError> {
-    match (name, pid) {
-        (None, None) => Err(ProcNotifyError::NullSelection),
-        (Some(_), Some(_)) => Err(ProcNotifyError::BothNameAndPid),
+fn validate_process_args(name: Option<String>, pid: Option<i32>, command: &[String]) -> Result<(), ProcNotifyError> {
+    match (name, pid, command.is_empty()) {
+        (None, None, true) => Err(ProcNotifyError::NullSelection),
+        (Some(_), Some(_), _) => Err(ProcNotifyError::BothNameAndPid),
+        (Some(_), _, false) | (_, Some(_), false) => Err(ProcNotifyError::InvalidCombination),
         _ => Ok(()),
     }
 }
@@ -225,16 +231,30 @@ fn main() {
     let args = Args::parse();
 
     // Validate process selection arguments
-    if let Err(err) = validate_process_args(args.name.clone(), args.pid) {
+    if let Err(err) = validate_process_args(args.name.clone(), args.pid, &args.command) {
         error!("Error: {}", err);
         std::process::exit(1);
     }
 
-    let process_data = find_processes(args.name, args.pid).unwrap_or_else(|err| {
-        error!("Error: {}", err);
-        std::process::exit(1);
-    });
-    let message = match wait_for_process_exit(process_data.clone()) {
+    let process_data = if !args.command.is_empty() {
+        // Spawn mode: execute the command and monitor it
+        let (cmd, cmd_args) = args.command.split_first().unwrap();
+        process::spawn(cmd, cmd_args.iter().map(String::as_str).collect()).unwrap_or_else(|err| {
+            error!("Error: {}", err);
+            std::process::exit(1);
+        })
+    } else {
+        // Monitor mode: find existing process
+        find_processes(args.name, args.pid).unwrap_or_else(|err| {
+            error!("Error: {}", err);
+            std::process::exit(1);
+        })
+    };
+    let message = match if !args.command.is_empty() {
+        process::wait_for_child_process_exit(process_data.clone())
+    } else {
+        wait_for_process_exit(process_data.clone())
+    } {
         Ok(process_data) => make_success_message(process_data),
         Err(err) => {
             error!("error: {}", err);
@@ -244,7 +264,7 @@ fn main() {
                     error!("runtime error: {}", e);
                     std::process::exit(1);
                 }
-                ProcNotifyError::BothNameAndPid => std::process::exit(1),
+                ProcNotifyError::BothNameAndPid | ProcNotifyError::InvalidCombination => std::process::exit(1),
                 _ => {}
             }
             make_error_message(process_data, err)

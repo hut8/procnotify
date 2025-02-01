@@ -8,6 +8,9 @@ pub enum ProcNotifyError {
     #[error("Cannot specify both --name and --pid. Use only one to identify the process to monitor.")]
     BothNameAndPid,
 
+    #[error("Cannot combine command execution with --name or --pid options")]
+    InvalidCombination,
+
     #[error("No such process: {0}")]
     NoSuchProcess(String),
 
