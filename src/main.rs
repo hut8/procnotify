@@ -12,7 +12,7 @@ use tracing::{error, info, warn, Level};
 mod errors;
 mod process;
 
-const FROM_ADDDRESS: &str = "process-notifier@hut8.tools";
+const DEFAULT_FROM_ADDDRESS: &str = "process-notifier@hut8.tools";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Monitor a process and send an email notification when it exits")]
@@ -34,6 +34,10 @@ struct Args {
     /// Email address to notify
     #[arg(short, long, env = "PROCNOTIFY_EMAIL")]
     email: String,
+
+    /// Email address to notify
+    #[arg(long, env = "PROCNOTIFY_FROM_EMAIL")]
+    from_email: String,
 
     /// SMTP Port
     #[arg(long, default_value = "587", env = "PROCNOTIFY_SMTP_PORT")]
@@ -138,7 +142,7 @@ fn notify_user(
 
     let from = Mailbox {
         name: Some("Process Notifier".to_string()),
-        email: FROM_ADDDRESS.parse().unwrap(),
+        email: DEFAULT_FROM_ADDDRESS.parse().unwrap(),
     };
     let to = Mailbox {
         name: None,
