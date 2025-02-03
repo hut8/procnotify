@@ -12,8 +12,6 @@ use tracing::{error, info, warn, Level};
 mod errors;
 mod process;
 
-const DEFAULT_FROM_ADDDRESS: &str = "process-notifier@hut8.tools";
-
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Monitor a process and send an email notification when it exits")]
 #[command(long_about = "Monitor a process and send an email notification when it exits. \
@@ -35,9 +33,9 @@ struct Args {
     #[arg(short, long, env = "PROCNOTIFY_EMAIL")]
     email: String,
 
-    /// Email address to notify
+    /// Email address to send from (optional)
     #[arg(long, env = "PROCNOTIFY_FROM_EMAIL")]
-    from_email: String,
+    from_email: Option<String>,
 
     /// SMTP Port
     #[arg(long, default_value = "587", env = "PROCNOTIFY_SMTP_PORT")]
@@ -126,6 +124,23 @@ fn find_processes(
     Err(errors::ProcNotifyError::NullSelection)
 }
 
+fn get_from_address(username: &str, hostname: &str) -> Result<Address, ProcNotifyError> {
+    // If username contains @, it's already a fully qualified email
+    if username.contains('@') {
+        return username.parse().map_err(|_| {
+            ProcNotifyError::InvalidConfiguration(format!("invalid SMTP username as email: {}", username))
+        });
+    }
+
+    // Otherwise append hostname
+    format!("{}@{}", username, hostname)
+        .parse()
+        .map_err(|_| ProcNotifyError::InvalidConfiguration(
+            format!("could not create valid email from SMTP username {} and hostname {}",
+                username, hostname)
+        ))
+}
+
 fn notify_user(
     server: &str,
     username: &str,
@@ -133,6 +148,7 @@ fn notify_user(
     email: &str,
     hostname: &str,
     text: &str,
+    from_email: Option<&str>,
 ) -> Result<(), ProcNotifyError> {
     // Send an email to the specified address
     info!("sending email to {}: {}", email, text);
@@ -140,9 +156,21 @@ fn notify_user(
         ProcNotifyError::InvalidConfiguration(format!("invalid to address: {}", email))
     })?;
 
+    // Determine from address using priority order:
+    // 1. PROCNOTIFY_FROM_EMAIL if set
+    // 2. PROCNOTIFY_SMTP_USERNAME if valid email
+    // 3. PROCNOTIFY_SMTP_USERNAME@hostname as fallback
+    let from_address = if let Some(from_email) = from_email {
+        from_email.parse().map_err(|_| {
+            ProcNotifyError::InvalidConfiguration(format!("invalid from address: {}", from_email))
+        })?
+    } else {
+        get_from_address(username, hostname)?
+    };
+
     let from = Mailbox {
         name: Some("Process Notifier".to_string()),
-        email: DEFAULT_FROM_ADDDRESS.parse().unwrap(),
+        email: from_address,
     };
     let to = Mailbox {
         name: None,
@@ -282,6 +310,7 @@ fn main() {
         &args.email,
         &hostname::get().unwrap().to_string_lossy(),
         &message,
+        args.from_email.as_deref(),
     )
     .unwrap_or_else(|err| {
         error!("error sending notification: {}", err);
