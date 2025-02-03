@@ -173,7 +173,7 @@ fn make_success_message(process_data: ProcessData) -> (String, String) {
 
     let plaintext = format!(
         "Process Name: {}\n\
-         Process ID: {}\n\
+         Process ID: {} (on {})\n\
          Start Time: {}\n\
          End Time: {}\n\
          Duration: {}\n\
@@ -181,8 +181,9 @@ fn make_success_message(process_data: ProcessData) -> (String, String) {
          {}{}",
         process_data.name,
         process_data.pid,
-        start_time.to_rfc3339(),
-        end_time.to_rfc3339(),
+        hostname::get().unwrap().to_string_lossy(),
+        start_time.format("%Y-%m-%dT%H:%M:%S%:z"),
+        end_time.format("%Y-%m-%dT%H:%M:%S%:z"),
         duration,
         exit_status,
         if let Some(stdout) = &process_data.stdout {
@@ -219,7 +220,7 @@ fn make_success_message(process_data: ProcessData) -> (String, String) {
     <div class="container">
         <div class="header">
             <h1 class="process-name">{}</h1>
-            <div class="process-id">Process ID: {}</div>
+            <div class="process-id">Process ID: {} (on {})</div>
         </div>
         <div class="details">
             <div class="detail-row">
@@ -239,8 +240,9 @@ fn make_success_message(process_data: ProcessData) -> (String, String) {
 </html>"#,
         process_data.name,
         process_data.pid,
-        start_time.to_rfc3339(),
-        end_time.to_rfc3339(),
+        hostname::get().unwrap().to_string_lossy(),
+        start_time.format("%Y-%m-%dT%H:%M:%S%:z"),
+        end_time.format("%Y-%m-%dT%H:%M:%S%:z"),
         duration,
         exit_status,
         if let Some(stdout) = &process_data.stdout {
