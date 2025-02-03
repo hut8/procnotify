@@ -151,10 +151,15 @@ fn format_duration(start_time: DateTime<Utc>, end_time: DateTime<Utc>) -> String
     format!("{:02}h {:02}m {:02}s", hours, minutes, seconds)
 }
 
-fn make_success_message(process_data: ProcessData) -> (String, String) {
+fn make_success_message(process_data: ProcessData) -> (String, String, String) {
     let end_time = chrono::Utc::now();
     let start_time = process_data.start_time.unwrap_or(end_time);
     let duration = format_duration(start_time, end_time);
+    // Get hostname once at the start
+    let hostname = hostname::get()
+        .unwrap_or_else(|_| "unknown".into())
+        .to_string_lossy()
+        .to_string();
 
     let exit_status = match (
         process_data.status,
@@ -171,6 +176,18 @@ fn make_success_message(process_data: ProcessData) -> (String, String) {
         (None, None, false) => "Exited".to_string(),
     };
 
+    let subject = format!(
+        "Process '{}' {} on {} at {}",
+        process_data.name,
+        match (process_data.status, process_data.signal) {
+            (Some(status), _) => format!("exited with status {}", status),
+            (_, Some(signal)) => format!("exited with signal {:?}", signal),
+            _ => "exited".to_string()
+        },
+        hostname,
+        end_time.format("%Y-%m-%d %H:%M:%S")
+    );
+
     let plaintext = format!(
         "Process Name: {}\n\
          Process ID: {} (on {})\n\
@@ -181,7 +198,7 @@ fn make_success_message(process_data: ProcessData) -> (String, String) {
          {}{}",
         process_data.name,
         process_data.pid,
-        hostname::get().unwrap().to_string_lossy(),
+        hostname,
         start_time.format("%Y-%m-%dT%H:%M:%S%:z"),
         end_time.format("%Y-%m-%dT%H:%M:%S%:z"),
         duration,
@@ -240,7 +257,7 @@ fn make_success_message(process_data: ProcessData) -> (String, String) {
 </html>"#,
         process_data.name,
         process_data.pid,
-        hostname::get().unwrap().to_string_lossy(),
+        hostname,
         start_time.format("%Y-%m-%dT%H:%M:%S%:z"),
         end_time.format("%Y-%m-%dT%H:%M:%S%:z"),
         duration,
@@ -269,10 +286,10 @@ fn make_success_message(process_data: ProcessData) -> (String, String) {
         }
     );
 
-    (plaintext, html)
+    (plaintext, html, subject)
 }
 
-fn make_error_message(process_data: ProcessData, err: ProcNotifyError) -> (String, String) {
+fn make_error_message(process_data: ProcessData, err: ProcNotifyError) -> (String, String, String) {
     let process_str = format!("Process {} ({})", process_data.name, process_data.pid);
     let error_str = match err {
         ProcNotifyError::NullSelection => "No process selection criteria provided. Use either --name or --pid to specify a process to monitor.".to_string(),
@@ -303,7 +320,8 @@ fn make_error_message(process_data: ProcessData, err: ProcNotifyError) -> (Strin
 </html>"#,
         process_str, error_str
     );
-    (text, html)
+    let subject = format!("Process '{}' monitoring error", process_data.name);
+    (text, html, subject)
 }
 
 fn notify_user(
@@ -313,6 +331,7 @@ fn notify_user(
     email: &str,
     hostname: &str,
     message: (&str, &str),
+    subject: &str,
     from_email: Option<&str>,
 ) -> Result<(), ProcNotifyError> {
     let (text, html) = message;
@@ -342,7 +361,7 @@ fn notify_user(
     let email = lettre::Message::builder()
         .from(from)
         .to(to)
-        .subject(format!("Process exited on {}", hostname))
+        .subject(subject)
         .multipart(
             MultiPart::alternative()
                 .singlepart(
@@ -428,13 +447,20 @@ fn main() {
         }
     };
 
+    // Get hostname once
+    let hostname = hostname::get()
+        .unwrap_or_else(|_| "unknown".into())
+        .to_string_lossy()
+        .to_string();
+
     notify_user(
         &args.smtp_server,
         &args.smtp_username,
         &args.smtp_password,
         &args.email,
-        &hostname::get().unwrap().to_string_lossy(),
+        &hostname,
         (&message.0, &message.1),
+        &message.2,
         args.from_email.as_deref(),
     )
     .unwrap_or_else(|err| {
