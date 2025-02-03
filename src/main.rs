@@ -1,6 +1,6 @@
 use clap::Parser;
 use errors::ProcNotifyError;
-use lettre::message::Mailbox;
+use lettre::message::{header, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::{Address, SmtpTransport, Transport};
 use nix::sys::signal::Signal;
@@ -8,6 +8,7 @@ use process::wait_for_process_exit;
 use std::path::Path;
 use sysinfo::{ProcessesToUpdate, System};
 use tracing::{error, info, warn, Level};
+use chrono::{DateTime, Utc};
 
 mod errors;
 mod process;
@@ -141,25 +142,184 @@ fn get_from_address(username: &str, hostname: &str) -> Result<Address, ProcNotif
         ))
 }
 
+fn format_duration(start_time: DateTime<Utc>, end_time: DateTime<Utc>) -> String {
+    let duration = end_time.signed_duration_since(start_time);
+    let total_seconds = duration.num_seconds();
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    format!("{:02}h {:02}m {:02}s", hours, minutes, seconds)
+}
+
+fn make_success_message(process_data: ProcessData) -> (String, String) {
+    let end_time = chrono::Utc::now();
+    let start_time = process_data.start_time.unwrap_or(end_time);
+    let duration = format_duration(start_time, end_time);
+
+    let exit_status = match (
+        process_data.status,
+        process_data.signal,
+        process_data.dump.unwrap_or(false),
+    ) {
+        (Some(status), _, _) => format!("Exited with status {}", status),
+        (_, Some(signal), dumped) => format!(
+            "Exited with signal {:?}{}",
+            signal,
+            if dumped { " and dumped core" } else { "" }
+        ),
+        (None, None, true) => "Exited and dumped core".to_string(),
+        (None, None, false) => "Exited".to_string(),
+    };
+
+    let plaintext = format!(
+        "Process Name: {}\n\
+         Process ID: {}\n\
+         Start Time: {}\n\
+         End Time: {}\n\
+         Duration: {}\n\
+         Status: {}\n\
+         {}{}",
+        process_data.name,
+        process_data.pid,
+        start_time.to_rfc3339(),
+        end_time.to_rfc3339(),
+        duration,
+        exit_status,
+        if let Some(stdout) = &process_data.stdout {
+            format!("\nStandard Output:\n{}", stdout)
+        } else {
+            String::new()
+        },
+        if let Some(stderr) = &process_data.stderr {
+            format!("\nStandard Error:\n{}", stderr)
+        } else {
+            String::new()
+        }
+    );
+
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; }}
+        .container {{ max-width: 600px; margin: 20px auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }}
+        .header {{ background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+        .process-name {{ font-size: 24px; margin: 0; color: #333; }}
+        .process-id {{ color: #666; margin: 5px 0; }}
+        .details {{ margin: 15px 0; }}
+        .detail-row {{ margin: 10px 0; }}
+        .label {{ font-weight: bold; color: #555; }}
+        .status {{ padding: 8px; border-radius: 4px; display: inline-block; }}
+        .output {{ background-color: #f8f9fa; padding: 10px; border-radius: 4px; white-space: pre-wrap; font-family: monospace; margin-top: 15px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1 class="process-name">{}</h1>
+            <div class="process-id">Process ID: {}</div>
+        </div>
+        <div class="details">
+            <div class="detail-row">
+                <span class="label">Start Time:</span> {}</div>
+            <div class="detail-row">
+                <span class="label">End Time:</span> {}</div>
+            <div class="detail-row">
+                <span class="label">Duration:</span> {}</div>
+            <div class="detail-row">
+                <span class="label">Status:</span>
+                <span class="status">{}</span>
+            </div>
+        </div>
+        {}{}
+    </div>
+</body>
+</html>"#,
+        process_data.name,
+        process_data.pid,
+        start_time.to_rfc3339(),
+        end_time.to_rfc3339(),
+        duration,
+        exit_status,
+        if let Some(stdout) = &process_data.stdout {
+            format!(
+                r#"<div class="output">
+                <div class="label">Standard Output:</div>
+                <pre>{}</pre>
+            </div>"#,
+                stdout
+            )
+        } else {
+            String::new()
+        },
+        if let Some(stderr) = &process_data.stderr {
+            format!(
+                r#"<div class="output">
+                <div class="label">Standard Error:</div>
+                <pre>{}</pre>
+            </div>"#,
+                stderr
+            )
+        } else {
+            String::new()
+        }
+    );
+
+    (plaintext, html)
+}
+
+fn make_error_message(process_data: ProcessData, err: ProcNotifyError) -> (String, String) {
+    let process_str = format!("Process {} ({})", process_data.name, process_data.pid);
+    let error_str = match err {
+        ProcNotifyError::NullSelection => "No process selection criteria provided. Use either --name or --pid to specify a process to monitor.".to_string(),
+        ProcNotifyError::BothNameAndPid => "Cannot specify both --name and --pid. Use only one to identify the process to monitor.".to_string(),
+        ProcNotifyError::InvalidCombination => "Cannot combine command execution with --name or --pid options".to_string(),
+        ProcNotifyError::NoSuchProcess(name) => format!("No such process: {}", name),
+        ProcNotifyError::InvalidConfiguration(msg) => format!("Invalid configuration: {}", msg),
+        ProcNotifyError::RuntimeError(msg) => format!("Runtime error: {}", msg),
+    };
+    let text = format!("{}\n{}", process_str, error_str);
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; }}
+        .container {{ max-width: 600px; margin: 20px auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }}
+        .error {{ color: #dc3545; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>{}</h2>
+        <p class="error">{}</p>
+    </div>
+</body>
+</html>"#,
+        process_str, error_str
+    );
+    (text, html)
+}
+
 fn notify_user(
     server: &str,
     username: &str,
     password: &str,
     email: &str,
     hostname: &str,
-    text: &str,
+    message: (&str, &str),
     from_email: Option<&str>,
 ) -> Result<(), ProcNotifyError> {
-    // Send an email to the specified address
-    info!("sending email to {}: {}", email, text);
+    let (text, html) = message;
+    info!("sending email to {}", email);
+
     let to_address = email.parse::<Address>().map_err(|_| {
         ProcNotifyError::InvalidConfiguration(format!("invalid to address: {}", email))
     })?;
 
-    // Determine from address using priority order:
-    // 1. PROCNOTIFY_FROM_EMAIL if set
-    // 2. PROCNOTIFY_SMTP_USERNAME if valid email
-    // 3. PROCNOTIFY_SMTP_USERNAME@hostname as fallback
     let from_address = if let Some(from_email) = from_email {
         from_email.parse().map_err(|_| {
             ProcNotifyError::InvalidConfiguration(format!("invalid from address: {}", from_email))
@@ -176,75 +336,37 @@ fn notify_user(
         name: None,
         email: to_address,
     };
-    // Create TLS transport on port 587 with STARTTLS
-    let sender = SmtpTransport::starttls_relay(server)
-        .map_err(|err| ProcNotifyError::RuntimeError(err.to_string()))?
-        // Add credentials for authentication
-        .credentials(Credentials::new(username.to_owned(), password.to_owned()))
-        // Configure expected authentication mechanism
-        .authentication(vec![Mechanism::Plain])
-        .build();
-    let message = lettre::Message::builder()
+
+    let email = lettre::Message::builder()
         .from(from)
         .to(to)
         .subject(format!("Process exited on {}", hostname))
-        .body(text.to_string())
-        .unwrap();
+        .multipart(
+            MultiPart::alternative()
+                .singlepart(
+                    SinglePart::builder()
+                        .header(header::ContentType::TEXT_PLAIN)
+                        .body(text.to_string())
+                )
+                .singlepart(
+                    SinglePart::builder()
+                        .header(header::ContentType::TEXT_HTML)
+                        .body(html.to_string())
+                ),
+        )
+        .map_err(|err| ProcNotifyError::RuntimeError(err.to_string()))?;
+
+    let sender = SmtpTransport::starttls_relay(server)
+        .map_err(|err| ProcNotifyError::RuntimeError(err.to_string()))?
+        .credentials(Credentials::new(username.to_owned(), password.to_owned()))
+        .authentication(vec![Mechanism::Plain])
+        .build();
 
     sender
-        .send(&message)
+        .send(&email)
         .map_err(|err| ProcNotifyError::RuntimeError(err.to_string()))?;
 
     Ok(())
-}
-
-fn make_error_message(process_data: ProcessData, err: ProcNotifyError) -> String {
-    let process_str = format!("Process {} ({})", process_data.name, process_data.pid);
-    let error_str = match err {
-        ProcNotifyError::NullSelection => "No process selection criteria provided. Use either --name or --pid to specify a process to monitor.".to_string(),
-        ProcNotifyError::BothNameAndPid => "Cannot specify both --name and --pid. Use only one to identify the process to monitor.".to_string(),
-        ProcNotifyError::InvalidCombination => "Cannot combine command execution with --name or --pid options".to_string(),
-        ProcNotifyError::NoSuchProcess(name) => format!("No such process: {}", name),
-        ProcNotifyError::InvalidConfiguration(msg) => format!("Invalid configuration: {}", msg),
-        ProcNotifyError::RuntimeError(msg) => format!("Runtime error: {}", msg),
-    };
-    format!("{}\n{}", process_str, error_str)
-}
-
-fn make_success_message(process_data: ProcessData) -> String {
-    let time_str = match process_data.start_time {
-        Some(start_time) => {
-            let duration = chrono::Utc::now().signed_duration_since(start_time);
-            let total_seconds = duration.num_seconds();
-            let hours = total_seconds / 3600;
-            let minutes = (total_seconds % 3600) / 60;
-            let seconds = total_seconds % 60;
-            format!(
-                "started at {} and ran for {:02}h {:02}m {:02}s",
-                start_time, hours, minutes, seconds
-            )
-        }
-        None => "".to_string(),
-    };
-    let process_str = format!(
-        "Process {} ({}) {}",
-        process_data.name, process_data.pid, time_str
-    );
-    match (
-        process_data.status,
-        process_data.signal,
-        process_data.dump.unwrap_or(false),
-    ) {
-        (Some(status), _, _) => format!("{} exited with status {}", process_str, status),
-        (_, Some(signal), dumped) => format!(
-            "{} exited with signal {:?} {}",
-            process_str,
-            signal,
-            if dumped { " and dumped core" } else { "" }
-        ),
-        (None, None, true) => format!("{} exited and dumped core", process_str),
-        (None, None, false) => format!("{} exited", process_str),
-    }
 }
 
 fn validate_process_args(name: Option<String>, pid: Option<i32>, command: &[String]) -> Result<(), ProcNotifyError> {
@@ -282,6 +404,7 @@ fn main() {
             std::process::exit(1);
         })
     };
+
     let message = match if !args.command.is_empty() {
         process::wait_for_child_process_exit(process_data.clone())
     } else {
@@ -309,7 +432,7 @@ fn main() {
         &args.smtp_password,
         &args.email,
         &hostname::get().unwrap().to_string_lossy(),
-        &message,
+        (&message.0, &message.1),
         args.from_email.as_deref(),
     )
     .unwrap_or_else(|err| {
