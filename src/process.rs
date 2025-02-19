@@ -1,10 +1,14 @@
 use std::{
     io::Read,
     process::{Command, Stdio},
+    sync::{Arc, Mutex, Once},
     thread,
 };
 
+use lazy_static::lazy_static;
+
 use nix::{
+    sys::signal::Signal,
     sys::wait::{waitpid, WaitStatus},
     unistd::Pid,
 };
@@ -22,6 +26,7 @@ use crate::{errors::ProcNotifyError, ProcessData};
 /// # Returns
 /// * `Result<ProcessData, ProcNotifyError>` - Process information including PID and output streams
 pub fn spawn(command: &str, args: Vec<&str>) -> Result<ProcessData, ProcNotifyError> {
+    // Create child process
     let mut child = Command::new(command)
         .args(&args)
         .stdout(Stdio::piped())
@@ -32,8 +37,11 @@ pub fn spawn(command: &str, args: Vec<&str>) -> Result<ProcessData, ProcNotifyEr
     let pid = child.id() as i32;
     let name = command.to_string();
 
-    // Get the stdout handle and spawn a thread to read it
+    // Get the stdout and stderr handles before setting up signal handlers
     let mut stdout_handle = child.stdout.take().unwrap();
+    let mut stderr_handle = child.stderr.take().unwrap();
+
+    // Start the output capture threads
     let stdout_thread = thread::spawn(move || {
         let mut output = String::new();
         stdout_handle
@@ -42,8 +50,6 @@ pub fn spawn(command: &str, args: Vec<&str>) -> Result<ProcessData, ProcNotifyEr
         output
     });
 
-    // Get the stderr handle and spawn a thread to read it
-    let mut stderr_handle = child.stderr.take().unwrap();
     let stderr_thread = thread::spawn(move || {
         let mut output = String::new();
         stderr_handle
@@ -52,11 +58,71 @@ pub fn spawn(command: &str, args: Vec<&str>) -> Result<ProcessData, ProcNotifyEr
         output
     });
 
+    // Now wrap the child process for signal handling
+    let child_process = Arc::new(Mutex::new(child));
+
+    // Set up signal handlers
+    let signals = vec![
+        Signal::SIGINT,
+        Signal::SIGTERM,
+        Signal::SIGHUP,
+        Signal::SIGQUIT,
+    ];
+
+    // Create a global static to store the child process
+    lazy_static! {
+        static ref CHILD_PROCESS: Mutex<Option<Arc<Mutex<std::process::Child>>>> = Mutex::new(None);
+    }
+    static INIT: Once = Once::new();
+
+    // Store our child process in the static
+    *CHILD_PROCESS.lock().unwrap() = Some(child_process.clone());
+
+    extern "C" fn handle_signal(sig: libc::c_int) {
+        if let Ok(guard) = CHILD_PROCESS.lock() {
+            if let Some(child_process) = guard.as_ref() {
+                if let Ok(mut child) = child_process.lock() {
+                    // Kill child process
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                // Reset signal handler and re-raise
+                unsafe {
+                    libc::signal(sig, libc::SIG_DFL);
+                    libc::raise(sig);
+                }
+            }
+        }
+    }
+
+    // Set up signal handlers
+    for &sig in signals.iter() {
+        unsafe {
+            libc::signal(sig as libc::c_int, handle_signal as libc::sighandler_t);
+        }
+    }
+
+    // Set up cleanup to reset handlers
+    INIT.call_once(|| {
+        std::panic::set_hook(Box::new(move |_| {
+            if let Ok(mut guard) = CHILD_PROCESS.lock() {
+                // Reset all signal handlers
+                for &sig in signals.iter() {
+                    unsafe {
+                        libc::signal(sig as libc::c_int, libc::SIG_DFL);
+                    }
+                }
+                // Clear the static
+                *guard = None;
+            }
+        }));
+    });
+
     // Create ProcessData with captured output
     let mut process_data = ProcessData::new(pid, name);
     process_data.stdout = Some(stdout_thread.join().unwrap());
     process_data.stderr = Some(stderr_thread.join().unwrap());
-
+    process_data.status = child_process.lock().unwrap().wait().unwrap().code();
     Ok(process_data)
 }
 
