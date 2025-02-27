@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use errors::ProcNotifyError;
 use lettre::message::{header, Mailbox, MultiPart, SinglePart};
@@ -8,15 +9,20 @@ use process::wait_for_process_exit;
 use std::path::Path;
 use sysinfo::{ProcessesToUpdate, System};
 use tracing::{error, info, warn, Level};
-use chrono::{DateTime, Utc};
 
 mod errors;
 mod process;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Monitor a process and send an email notification when it exits")]
-#[command(long_about = "Monitor a process and send an email notification when it exits. \
-Either monitor an existing process using --name or --pid, or provide a command to execute.")]
+#[command(
+    author,
+    version,
+    about = "Monitor a process and send an email notification when it exits"
+)]
+#[command(
+    long_about = "Monitor a process and send an email notification when it exits. \
+Either monitor an existing process using --name or --pid, or provide a command to execute."
+)]
 struct Args {
     /// Name of the process to monitor (cannot be used with --pid or command)
     #[arg(short, long, conflicts_with_all = ["pid", "command"])]
@@ -59,6 +65,7 @@ struct Args {
 pub struct ProcessData {
     pid: i32,
     name: String,
+    args: Vec<String>,
     status: Option<i32>,
     signal: Option<Signal>,
     dump: Option<bool>,
@@ -68,7 +75,7 @@ pub struct ProcessData {
 }
 
 impl ProcessData {
-    pub fn new(pid: i32, name: String) -> ProcessData {
+    pub fn new(pid: i32, name: String, args: Vec<String>) -> ProcessData {
         let mut system = System::new();
         system.refresh_all();
         let proc = system.process(sysinfo::Pid::from(pid as usize));
@@ -81,6 +88,7 @@ impl ProcessData {
         ProcessData {
             pid,
             name,
+            args,
             start_time,
             status: None,
             signal: None,
@@ -102,7 +110,13 @@ fn find_processes(
         let proc = sys
             .process(sysinfo::Pid::from(pid as usize))
             .ok_or(errors::ProcNotifyError::NoSuchProcess(pid.to_string()))?;
-        let process_data = ProcessData::new(pid, proc.name().to_string_lossy().to_string());
+        let process_name = proc.name().to_string_lossy().to_string();
+        let args = proc
+            .cmd()
+            .iter()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        let process_data = ProcessData::new(pid, process_name, args);
         return Ok(process_data);
     }
 
@@ -111,9 +125,15 @@ fn find_processes(
             if let Some(exe_path) = process.exe() {
                 if let Some(exe_name) = exe_path.file_name() {
                     if exe_name == Path::new(&name).as_os_str() {
+                        let args = process
+                            .cmd()
+                            .iter()
+                            .map(|arg| arg.to_string_lossy().to_string())
+                            .collect::<Vec<_>>();
                         let process_data = ProcessData::new(
                             pid.as_u32() as i32,
                             exe_name.to_string_lossy().to_string(),
+                            args,
                         );
                         return Ok(process_data);
                     }
@@ -129,17 +149,20 @@ fn get_from_address(username: &str, hostname: &str) -> Result<Address, ProcNotif
     // If username contains @, it's already a fully qualified email
     if username.contains('@') {
         return username.parse().map_err(|_| {
-            ProcNotifyError::InvalidConfiguration(format!("invalid SMTP username as email: {}", username))
+            ProcNotifyError::InvalidConfiguration(format!(
+                "invalid SMTP username as email: {}",
+                username
+            ))
         });
     }
 
     // Otherwise append hostname
-    format!("{}@{}", username, hostname)
-        .parse()
-        .map_err(|_| ProcNotifyError::InvalidConfiguration(
-            format!("could not create valid email from SMTP username {} and hostname {}",
-                username, hostname)
+    format!("{}@{}", username, hostname).parse().map_err(|_| {
+        ProcNotifyError::InvalidConfiguration(format!(
+            "could not create valid email from SMTP username {} and hostname {}",
+            username, hostname
         ))
+    })
 }
 
 fn format_duration(start_time: DateTime<Utc>, end_time: DateTime<Utc>) -> String {
@@ -182,7 +205,7 @@ fn make_success_message(process_data: ProcessData) -> (String, String, String) {
         match (process_data.status, process_data.signal) {
             (Some(status), _) => format!("exited with status {}", status),
             (_, Some(signal)) => format!("exited with signal {:?}", signal),
-            _ => "exited".to_string()
+            _ => "exited".to_string(),
         },
         hostname,
         end_time.format("%Y-%m-%d %H:%M:%S")
@@ -191,6 +214,7 @@ fn make_success_message(process_data: ProcessData) -> (String, String, String) {
     let plaintext = format!(
         "Process Name: {}\n\
          Process ID: {} (on {})\n\
+         Arguments: {:?}\n\
          Start Time: {}\n\
          End Time: {}\n\
          Duration: {}\n\
@@ -198,6 +222,7 @@ fn make_success_message(process_data: ProcessData) -> (String, String, String) {
          {}{}",
         process_data.name,
         process_data.pid,
+        process_data.args.join(" "),
         hostname,
         start_time.format("%Y-%m-%dT%H:%M:%S%:z"),
         end_time.format("%Y-%m-%dT%H:%M:%S%:z"),
@@ -241,6 +266,8 @@ fn make_success_message(process_data: ProcessData) -> (String, String, String) {
         </div>
         <div class="details">
             <div class="detail-row">
+                <span class="label">Arguments:</span> {}</div>
+            <div class="detail-row">
                 <span class="label">Start Time:</span> {}</div>
             <div class="detail-row">
                 <span class="label">End Time:</span> {}</div>
@@ -257,6 +284,7 @@ fn make_success_message(process_data: ProcessData) -> (String, String, String) {
 </html>"#,
         process_data.name,
         process_data.pid,
+        process_data.args.join(" "),
         hostname,
         start_time.format("%Y-%m-%dT%H:%M:%S%:z"),
         end_time.format("%Y-%m-%dT%H:%M:%S%:z"),
@@ -367,12 +395,12 @@ fn notify_user(
                 .singlepart(
                     SinglePart::builder()
                         .header(header::ContentType::TEXT_PLAIN)
-                        .body(text.to_string())
+                        .body(text.to_string()),
                 )
                 .singlepart(
                     SinglePart::builder()
                         .header(header::ContentType::TEXT_HTML)
-                        .body(html.to_string())
+                        .body(html.to_string()),
                 ),
         )
         .map_err(|err| ProcNotifyError::RuntimeError(err.to_string()))?;
@@ -390,7 +418,11 @@ fn notify_user(
     Ok(())
 }
 
-fn validate_process_args(name: Option<String>, pid: Option<i32>, command: &[String]) -> Result<(), ProcNotifyError> {
+fn validate_process_args(
+    name: Option<String>,
+    pid: Option<i32>,
+    command: &[String],
+) -> Result<(), ProcNotifyError> {
     match (name, pid, command.is_empty()) {
         (None, None, true) => Err(ProcNotifyError::NullSelection),
         (Some(_), Some(_), _) => Err(ProcNotifyError::BothNameAndPid),
@@ -440,7 +472,9 @@ fn main() {
                     error!("runtime error: {}", e);
                     std::process::exit(1);
                 }
-                ProcNotifyError::BothNameAndPid | ProcNotifyError::InvalidCombination => std::process::exit(1),
+                ProcNotifyError::BothNameAndPid | ProcNotifyError::InvalidCombination => {
+                    std::process::exit(1)
+                }
                 _ => {}
             }
             make_error_message(process_data, err)

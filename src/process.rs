@@ -119,7 +119,8 @@ pub fn spawn(command: &str, args: Vec<&str>) -> Result<ProcessData, ProcNotifyEr
     });
 
     // Create ProcessData with captured output
-    let mut process_data = ProcessData::new(pid, name);
+    let args = args.iter().map(|s| s.to_string()).collect();
+    let mut process_data = ProcessData::new(pid, name, args);
     process_data.stdout = Some(stdout_thread.join().unwrap());
     process_data.stderr = Some(stderr_thread.join().unwrap());
     process_data.status = child_process.lock().unwrap().wait().unwrap().code();
@@ -299,10 +300,7 @@ pub fn wait_for_process_exit(process_data: ProcessData) -> Result<ProcessData, P
                     });
                 }
                 // TODO: Determine if both exit and coredump events can be received for the same process
-                cnproc::PidEvent::Coredump {
-                    process_pid,
-                    ..
-                } => {
+                cnproc::PidEvent::Coredump { process_pid, .. } => {
                     if process_pid != process_data.pid {
                         continue;
                     }
