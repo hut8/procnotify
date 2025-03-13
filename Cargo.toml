@@ -9,7 +9,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-log = "0.2"
 sysinfo = "0.33.1"
 clap = { version = "4.5.30", features = ["derive", "env"] }
-lettre = { version = "0.11.13", features = ["builder", "hostname", "pool", "smtp-transport", "rustls-native-certs", "rustls-tls"], default-features = false }
+lettre = { version = "0.11.15", features = ["builder", "hostname", "pool", "smtp-transport", "rustls-native-certs", "rustls-tls"], default-features = false }
 nix = { version = "0.29.0", features = ["process", "ptrace", "signal"] }
 libc = "0.2"
 lazy_static = "1.4.0"
