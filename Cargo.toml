@@ -16,7 +16,7 @@ lazy_static = "1.4.0"
 thiserror = "2.0.17"
 dotenvy = "0.15.7"
 hostname = "0.4.2"
-chrono = "0.4.42"
+chrono = "0.4.43"
 
 [target.'cfg(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
 kqueue = "1.1.1"
