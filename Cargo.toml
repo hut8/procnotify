@@ -8,7 +8,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-log = "0.2"
 sysinfo = "0.38.0"
-clap = { version = "4.5.54", features = ["derive", "env"] }
+clap = { version = "4.5.56", features = ["derive", "env"] }
 lettre = { version = "0.11.19", features = ["builder", "hostname", "pool", "smtp-transport", "rustls-native-certs", "rustls-tls"], default-features = false }
 nix = { version = "0.31.1", features = ["process", "ptrace", "signal"] }
 libc = "0.2"
