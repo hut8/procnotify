@@ -5,7 +5,15 @@
 
 version: 2
 updates:
-  - package-ecosystem: "cargo" # See documentation for possible values
-    directory: "/" # Location of package manifests
+  - package-ecosystem: "cargo"
+    directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      cargo-major:
+        update-types:
+          - "major"
+      cargo-minor:
+        update-types:
+          - "minor"
+          - "patch"
