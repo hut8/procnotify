@@ -7,9 +7,9 @@ edition = "2021"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-log = "0.2"
-sysinfo = "0.38.0"
-clap = { version = "4.5.60", features = ["derive", "env"] }
-lettre = { version = "0.11.19", features = ["builder", "hostname", "pool", "smtp-transport", "rustls-native-certs", "rustls-tls"], default-features = false }
+sysinfo = "0.38.4"
+clap = { version = "4.6.0", features = ["derive", "env"] }
+lettre = { version = "0.11.20", features = ["builder", "hostname", "pool", "smtp-transport", "rustls-native-certs", "rustls-tls"], default-features = false }
 nix = { version = "0.31.2", features = ["process", "ptrace", "signal"] }
 libc = "0.2"
 lazy_static = "1.4.0"
